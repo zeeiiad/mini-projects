@@ -1,0 +1,196 @@
+#include <avr/io.h>
+#include <avr/interrupt.h>
+#include <util/delay.h>
+
+unsigned char seconds1 = 0;
+unsigned char seconds2 = 0;
+unsigned char minutes1 = 0;
+unsigned char minutes2 = 0;
+unsigned char hours1   = 0;
+unsigned char hours2   = 0;
+unsigned char INT1_flag= 0;
+
+void _7segment_Configuration(void)
+{
+	DDRC  |= 0x0F;                                            //7-segment is connected to first 4 bits at PORTC
+	PORTC &= 0xF0;                                            //7-segment initial value = 0
+
+	DDRA  |= 0x3F;                                            //configure the first 6 pins at PORTA as output pins
+	PORTA &= 0xC0;                                            /*7-segment is (common anode)
+	                                                            ∴ Set the first 6 pins at PORTA to 0 to enable BJT NPN
+	                                                              transistor to connect the 7-segment common to Vcc*/
+}
+
+void Timer1_CTC_Init(void)
+{
+	TCNT1  = 0;                                               //Set Timer1 initial count to 0
+
+	OCR1A  = 976.5685;                                             /*Set the compare value:
+	                                                            F_CPU= 1Mhz, Prescaler=1024
+	                                                            ∴T(timer)=Prescaler/F-CPU=1024microsec
+	                                                            ∴ 1sec/1024msec=976.5685*/
+
+	TIMSK |= (1<<OCIE1A);                                     //Enable Timer1 compare A interrupt
+
+	TCCR1A = (1<<FOC1A);                                      /*Timer/counter1 control register A configuration:
+	                                                            1. Compare output mode, non-PWM
+	                                                               normal operation, OC1A/OC1B disconnected
+	                                                               ∴ COM1A1/COM1A0/COM1b1/COM1b0 = 0
+	                                                            2. FOC1A = 1 / FOC1B = 0
+	                                                            3. CTC is the mode of operation
+	                                                               ∴ WGM11/WGM10 = 0*/
+
+	TCCR1B = (1<<WGM12)|(1<<CS12)|(1<<CS10);                  /*Timer/counter1 control register B configuration:
+	                                                            1. CTC is the mode of operation
+                                                                   ∴ WGM13 = 0 / WGM12 = 1
+                                                                2. Prescaler = F-CPU/1024
+                                                                   ∴ CS11 = 0 / CS12/CS10 = 1*/
+}
+ISR(TIMER1_COMPA_vect)
+{
+	if(INT1_flag == 0)
+	{
+		seconds1++;
+		if(seconds1 == 10)
+		{
+			seconds1 = 0;
+			seconds2++;
+		}
+		if(seconds2 == 6)
+		{
+			seconds2= 0;
+			minutes1++;
+		}
+		if(minutes1 == 10)
+		{
+			minutes1 = 0;
+			minutes2++;
+		}
+		if(minutes2 == 6)
+		{
+			minutes2= 0;
+			hours1++;
+		}
+		if(hours1 == 10)
+		{
+			hours1  = 0;
+			hours2++;
+		}
+		if(hours2 == 10)
+		{
+			hours2  = 0;
+		}
+	}
+	PORTC = (PORTC & 0xF0) | (seconds1 & 0x0F);
+	PORTC = (PORTC & 0xF0) | (seconds2 & 0x0F);
+	PORTC = (PORTC & 0xF0) | (minutes1 & 0x0F);
+	PORTC = (PORTC & 0xF0) | (minutes2 & 0x0F);
+	PORTC = (PORTC & 0xF0) | (hours1 & 0x0F);
+	PORTC = (PORTC & 0xF0) | (hours2 & 0x0F);
+}
+
+
+
+void INT0_Init(void)
+{
+	DDRD  &= ~(1<<PD2);                                       //PB is connected to INT0
+	PORTD |= (1<<PD2);                                        //Activate internal pull up resistor at PD2
+	GICR  |= (1<<INT0);                                       //Enable external interrupt INT0
+	MCUCR |= (1<<ISC01);                                      //Trigger INT0 with falling edge
+}
+ISR(INT0_vect)                                                //RESET 7-segments
+{
+	TCNT1    = 0;
+	INT1_flag= 0;
+	seconds1 = 0;
+	seconds2 = 0;
+	minutes1 = 0;
+	minutes2 = 0;
+	hours1   = 0;
+	hours2   = 0;
+	PORTC &= 0xF0;
+	_delay_ms(50);
+}
+
+
+
+void INT1_Init(void)
+{
+	DDRD  &= ~(1<<PD3);                                       //PB is connected to INT1
+	PORTD &= ~(1<<PD3);                                       //PB is using external Pull Down resistor
+	GICR  |= (1<<INT1);                                       //Enable external interrupt INT1
+	MCUCR |= (1<<ISC10) |(1<<ISC11);                          //Trigger INT1 with rising edge
+}
+ISR(INT1_vect)                                                //PAUSE 7-segment
+{
+	if(PIND & (1<<PD3))
+	{
+	INT1_flag = 1;
+	}
+}
+
+
+
+void INT2_Init(void)
+{
+	DDRB   &= ~(1<<PB2);                                      //PB is connected to INT2
+	PORTB  |= (1<<PB2);                                       //Activate internal pull up resistor at PB2
+	GICR   |= (1<<INT2);                                      //Enable external interrupt INT2
+	MCUCSR &= ~(1<<ISC2);                                     //Trigger INT2 with falling edge
+}
+ISR(INT2_vect)                                                //RESUME 7-segment
+{
+	INT1_flag= 0;
+}
+
+
+
+int main(void)
+{
+	_7segment_Configuration();
+	Timer1_CTC_Init();
+	INT0_Init();
+	INT1_Init();
+	INT2_Init();
+
+	SREG  |= (1<<7);                                          //Global Interrupt Enable (I-bit)
+
+	do{
+		PORTC = (PORTC & 0xF0) | (seconds1 & 0x0F);
+		PORTA = 0x20;
+		_delay_ms(0.01);
+		PORTA &= 0xC0;
+		_delay_ms(0.01);
+
+		PORTC = (PORTC & 0xF0) | (seconds2 & 0x0F);
+		PORTA = 0x10;
+		_delay_ms(0.01);
+		PORTA &= 0xC0;
+		_delay_ms(0.01);
+
+		PORTC = (PORTC & 0xF0) | (minutes1 & 0x0F);
+		PORTA = 0x08;
+		_delay_ms(0.01);
+		PORTA &= 0xC0;
+		_delay_ms(0.01);
+
+		PORTC = (PORTC & 0xF0) | (minutes2 & 0x0F);
+		PORTA = 0x04;
+		_delay_ms(0.01);
+		PORTA &= 0xC0;
+		_delay_ms(0.01);
+
+		PORTC = (PORTC & 0xF0) | (hours1 & 0x0F);
+		PORTA = 0x02;
+		_delay_ms(0.01);
+		PORTA &= 0xC0;
+		_delay_ms(0.01);
+
+		PORTC = (PORTC & 0xF0) | (hours2 & 0x0F);
+		PORTA = 0x01;
+		_delay_ms(0.01);
+		PORTA &= 0xC0;
+		_delay_ms(0.01);
+
+	}while((INT1_flag == 0) || (INT1_flag == 1));
+}
